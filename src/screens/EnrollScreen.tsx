@@ -1,16 +1,23 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
   Image,
+  LayoutChangeEvent,
   SafeAreaView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Camera, useCameraDevice } from 'react-native-vision-camera';
+import { Camera, runAsync, useCameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import { Worklets } from 'react-native-worklets-core';
 import RNFS from 'react-native-fs';
+import {
+  Face,
+  FrameFaceDetectionOptions,
+  useFaceDetector,
+} from 'react-native-vision-camera-face-detector';
 import { addStudent, clearStudents, getStudents, Student } from '../utils/storage';
 
 function uid() {
@@ -25,6 +32,56 @@ export default function EnrollScreen() {
   const [studentName, setStudentName] = useState('');
   const [students, setStudents] = useState<Student[]>([]);
   const [isBusy, setIsBusy] = useState(false);
+  const [faces, setFaces] = useState<Face[]>([]);
+  const [previewSize, setPreviewSize] = useState({ width: 1, height: 1 });
+  const lastFaceUpdateMs = useRef(0);
+
+  const faceDetectionOptions = useMemo<FrameFaceDetectionOptions>(
+    () => ({
+      performanceMode: 'fast',
+      landmarkMode: 'none',
+      contourMode: 'none',
+      classificationMode: 'none',
+      minFaceSize: 0.15,
+      trackingEnabled: true,
+      cameraFacing: 'back',
+      autoMode: true,
+      windowWidth: previewSize.width,
+      windowHeight: previewSize.height,
+    }),
+    [previewSize.height, previewSize.width],
+  );
+
+  const { detectFaces, stopListeners } = useFaceDetector(faceDetectionOptions);
+
+  useEffect(() => {
+    return () => {
+      stopListeners();
+    };
+  }, [stopListeners]);
+
+  const handleDetectedFaces = useMemo(
+    () =>
+      Worklets.createRunOnJS((detectedFaces: Face[]) => {
+        const now = Date.now();
+        if (now - lastFaceUpdateMs.current < 120) return;
+        lastFaceUpdateMs.current = now;
+        setFaces(detectedFaces);
+      }),
+    [],
+  );
+
+  const frameProcessor = useFrameProcessor(
+    (frame) => {
+      'worklet';
+      runAsync(frame, () => {
+        'worklet';
+        const detectedFaces = detectFaces(frame);
+        handleDetectedFaces(detectedFaces);
+      });
+    },
+    [detectFaces, handleDetectedFaces],
+  );
 
   useEffect(() => {
     (async () => {
@@ -35,6 +92,19 @@ export default function EnrollScreen() {
       setStudents(list);
     })();
   }, []);
+
+  function onPreviewLayout(event: LayoutChangeEvent) {
+    const { width, height } = event.nativeEvent.layout;
+    const normalizedWidth = width > 0 ? width : 1;
+    const normalizedHeight = height > 0 ? height : 1;
+    if (
+      Math.round(normalizedWidth) === Math.round(previewSize.width) &&
+      Math.round(normalizedHeight) === Math.round(previewSize.height)
+    ) {
+      return;
+    }
+    setPreviewSize({ width: normalizedWidth, height: normalizedHeight });
+  }
 
   async function ensureFolder() {
     const dir = `${RNFS.DocumentDirectoryPath}/students`;
@@ -180,14 +250,43 @@ export default function EnrollScreen() {
       </View>
 
       {/* Camera preview */}
-      <View style={{ height: 240, marginHorizontal: 12, borderRadius: 14, overflow: 'hidden' }}>
+      <View
+        style={{ height: 240, marginHorizontal: 12, borderRadius: 14, overflow: 'hidden' }}
+        onLayout={onPreviewLayout}
+      >
         <Camera
           ref={cameraRef}
           style={{ flex: 1 }}
           device={device}
           isActive={true}
           photo={true}
+          frameProcessor={frameProcessor}
         />
+        {faces[0] ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: Math.max(0, faces[0].bounds.x),
+              top: Math.max(0, faces[0].bounds.y),
+              width: Math.max(1, faces[0].bounds.width),
+              height: Math.max(1, faces[0].bounds.height),
+              borderWidth: 2,
+              borderColor: '#00C853',
+              borderRadius: 10,
+              backgroundColor: 'transparent',
+            }}
+          />
+        ) : null}
+      </View>
+
+      <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+        <Text style={{ color: '#333', fontWeight: '700' }}>Faces detected: {faces.length}</Text>
+        <Text style={{ color: '#666', fontSize: 12 }}>
+          {faces[0]
+            ? `Box: x=${Math.round(faces[0].bounds.x)}, y=${Math.round(faces[0].bounds.y)}, w=${Math.round(faces[0].bounds.width)}, h=${Math.round(faces[0].bounds.height)}`
+            : 'No face in frame'}
+        </Text>
       </View>
 
       {/* Saved list */}
