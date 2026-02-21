@@ -6,6 +6,13 @@ const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
  *
  * @type {import('@react-native/metro-config').MetroConfig}
  */
-const config = {};
+const defaultConfig = getDefaultConfig(__dirname);
+const assetExts = defaultConfig.resolver.assetExts || [];
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+const config = {
+  resolver: {
+    assetExts: assetExts.includes('tflite') ? assetExts : [...assetExts, 'tflite'],
+  },
+};
+
+module.exports = mergeConfig(defaultConfig, config);
